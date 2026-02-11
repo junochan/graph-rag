@@ -204,6 +204,17 @@ entity_list_response = api.model(
     },
 )
 
+graph_data_response = api.model(
+    "GraphDataResponse",
+    {
+        "success": fields.Boolean(description="Whether the request succeeded"),
+        "nodes": fields.List(fields.Raw, description="List of graph nodes"),
+        "edges": fields.List(fields.Raw, description="List of graph edges"),
+        "stats": fields.Raw(description="Statistics about the graph"),
+        "error": fields.String(description="Error message if failed"),
+    },
+)
+
 
 # ============================================================================
 # Graph Query Endpoints
@@ -254,6 +265,155 @@ class GraphQuery(Resource):
             return {
                 "success": False,
                 "data": [],
+                "error": str(e),
+            }
+
+
+@api.route("/graph-data")
+class GraphData(Resource):
+    """Get full graph data including nodes and edges."""
+
+    @api.doc("graph_data")
+    @api.marshal_with(graph_data_response)
+    def get(self) -> dict[str, Any]:
+        """
+        Get full graph data including nodes and edges for visualization.
+
+        Query parameters:
+        - space: Graph space name (optional)
+        - limit: Maximum number of nodes to return (default: 100)
+        """
+        settings = get_settings()
+        space = request.args.get("space") or settings.nebula.space
+        limit = request.args.get("limit", 100, type=int)
+
+        try:
+            graph_service = get_graph_service()
+            graph_service.connect()
+
+            # Get all nodes from different entity types
+            entity_types = ["person", "organization", "location", "entity", "concept", "technology", "product", "event"]
+            all_nodes = []
+            node_ids = set()
+
+            for et in entity_types:
+                query = f"""
+                    MATCH (v:{et})
+                    RETURN id(v) AS id, v.{et}.name AS name,
+                           v.{et}.description AS description,
+                           "{et}" AS type
+                    LIMIT {limit // len(entity_types) + 1}
+                """
+                result = graph_service.execute(query, space)
+                if result.get("success") and result.get("data"):
+                    for row in result["data"]:
+                        node_id = row.get("id")
+                        if node_id and node_id not in node_ids:
+                            node_ids.add(node_id)
+                            all_nodes.append({
+                                "id": node_id,
+                                "name": row.get("name") or node_id,
+                                "type": row.get("type") or et,
+                                "properties": {"description": row.get("description") or ""},
+                            })
+
+            # Get all edges between the nodes
+            all_edges = []
+            edge_keys = set()
+
+            if node_ids:
+                # Query edges for all collected nodes
+                edge_query = f"""
+                    MATCH (n)-[e]-(m)
+                    WHERE id(n) IN {list(node_ids)[:50]}
+                    RETURN id(n) AS source, id(m) AS target, type(e) AS edge_type,
+                           properties(n) AS src_props, properties(m) AS dst_props,
+                           labels(n) AS src_labels, labels(m) AS dst_labels
+                    LIMIT 500
+                """
+                result = graph_service.execute(edge_query, space)
+                if result.get("success") and result.get("data"):
+                    # Build name lookup
+                    name_map = {n["id"]: n["name"] for n in all_nodes}
+
+                    for row in result["data"]:
+                        source = row.get("source")
+                        target = row.get("target")
+                        edge_type = row.get("edge_type")
+
+                        if not source or not target or not edge_type:
+                            continue
+
+                        # Create unique edge key (bidirectional)
+                        edge_key = f"{source}-{edge_type}-{target}"
+                        reverse_key = f"{target}-{edge_type}-{source}"
+
+                        if edge_key in edge_keys or reverse_key in edge_keys:
+                            continue
+
+                        edge_keys.add(edge_key)
+
+                        # Get names from props if not in name_map
+                        src_name = name_map.get(source, source)
+                        dst_name = name_map.get(target, target)
+
+                        # Try to extract name from properties
+                        src_props = row.get("src_props", {}) or {}
+                        dst_props = row.get("dst_props", {}) or {}
+                        src_labels = row.get("src_labels", []) or []
+                        dst_labels = row.get("dst_labels", []) or []
+
+                        for label in src_labels:
+                            key = f"{label}.name"
+                            if key in src_props:
+                                src_name = src_props[key]
+                                name_map[source] = src_name
+                                break
+
+                        for label in dst_labels:
+                            key = f"{label}.name"
+                            if key in dst_props:
+                                dst_name = dst_props[key]
+                                name_map[target] = dst_name
+                                break
+
+                        all_edges.append({
+                            "source": source,
+                            "source_name": src_name,
+                            "target": target,
+                            "target_name": dst_name,
+                            "type": edge_type,
+                        })
+
+                        # Add target node if not in nodes list
+                        if target not in node_ids:
+                            node_ids.add(target)
+                            dst_type = dst_labels[0] if dst_labels else "entity"
+                            all_nodes.append({
+                                "id": target,
+                                "name": dst_name,
+                                "type": dst_type,
+                                "properties": {},
+                            })
+
+            return {
+                "success": True,
+                "nodes": all_nodes[:limit],
+                "edges": all_edges,
+                "stats": {
+                    "total_nodes": len(all_nodes),
+                    "total_edges": len(all_edges),
+                },
+                "error": None,
+            }
+
+        except Exception as e:
+            logger.error(f"Get graph data failed: {e}")
+            return {
+                "success": False,
+                "nodes": [],
+                "edges": [],
+                "stats": {"total_nodes": 0, "total_edges": 0},
                 "error": str(e),
             }
 

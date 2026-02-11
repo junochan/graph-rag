@@ -4,6 +4,7 @@ Flask application factory and main entry point.
 
 import logging
 from flask import Flask
+from flask_cors import CORS
 from flask_restx import Api
 
 from src.config import get_settings
@@ -21,6 +22,12 @@ def create_app() -> Flask:
 
     app = Flask(__name__)
     app.config["DEBUG"] = settings.debug
+
+    # Enable CORS for frontend
+    CORS(app, origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ])
 
     # Initialize Flask-RESTX API with Swagger
     api = Api(

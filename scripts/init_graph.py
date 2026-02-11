@@ -270,10 +270,10 @@ def init_space(
 
     success, msg = execute_query(session, query)
     if success:
-        print(f"✓ Space '{space_name}' created (or already exists)")
+        print(f"[OK] Space '{space_name}' created (or already exists)")
         return True
     else:
-        print(f"✗ Failed to create space: {msg}")
+        print(f"[FAILED] Failed to create space: {msg}")
         return False
 
 
@@ -303,10 +303,10 @@ def init_tags(session, space_name: str) -> tuple[int, int]:
 
         success, msg = execute_query(session, query)
         if success:
-            print(f"  ✓ Tag: {tag_name}")
+            print(f"  [OK] Tag: {tag_name}")
             success_count += 1
         else:
-            print(f"  ✗ Tag: {tag_name} - {msg}")
+            print(f"  [FAILED] Tag: {tag_name} - {msg}")
             fail_count += 1
 
     return success_count, fail_count
@@ -341,10 +341,10 @@ def init_edge_types(session, space_name: str) -> tuple[int, int]:
 
         success, msg = execute_query(session, query)
         if success:
-            print(f"  ✓ Edge: {edge_name}")
+            print(f"  [OK] Edge: {edge_name}")
             success_count += 1
         else:
-            print(f"  ✗ Edge: {edge_name} - {msg}")
+            print(f"  [FAILED] Edge: {edge_name} - {msg}")
             fail_count += 1
 
     return success_count, fail_count
@@ -377,10 +377,10 @@ def create_indexes(session, space_name: str) -> tuple[int, int]:
 
         success, msg = execute_query(session, query)
         if success:
-            print(f"  ✓ Index: {idx_name}")
+            print(f"  [OK] Index: {idx_name}")
             success_count += 1
         else:
-            print(f"  ✗ Index: {idx_name} - {msg}")
+            print(f"  [FAILED] Index: {idx_name} - {msg}")
             fail_count += 1
 
     return success_count, fail_count
@@ -477,9 +477,9 @@ def main():
         print(f"\nConnecting to NebulaGraph...")
         pool = create_connection_pool(args.host, args.port)
         session = pool.get_session(args.user, args.password)
-        print("✓ Connected successfully")
+        print("[OK] Connected successfully")
     except Exception as e:
-        print(f"✗ Connection failed: {e}")
+        print(f"[FAILED] Connection failed: {e}")
         sys.exit(1)
 
     try:
@@ -530,9 +530,9 @@ def main():
 
         total_fail = tag_fail + edge_fail + idx_fail
         if total_fail == 0:
-            print("\n✓ Schema initialization completed successfully!")
+            print("\n[OK] Schema initialization completed successfully!")
         else:
-            print(f"\n⚠ Schema initialization completed with {total_fail} errors")
+            print(f"\n[WARNING] Schema initialization completed with {total_fail} errors")
 
     finally:
         session.release()

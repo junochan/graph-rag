@@ -21,6 +21,7 @@ dependencies = [
     "chardet>=5.2.0",
     # 文本分块
     "tiktoken>=0.5.0",
+    "flask-cors>=6.0.2",
 ]
 
 [project.optional-dependencies]
