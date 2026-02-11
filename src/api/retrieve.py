@@ -3,10 +3,11 @@ Retrieve API - handles HTTP request/response for knowledge retrieval.
 Business logic is delegated to RetrievalService.
 """
 
+import json
 import logging
-from typing import Any
+from typing import Any, Generator
 
-from flask import request
+from flask import Response, request, stream_with_context
 from flask_restx import Namespace, Resource, fields
 
 from src.config import get_settings
@@ -20,6 +21,14 @@ api = Namespace("retrieve", description="Knowledge retrieval operations")
 # ============================================================================
 # API Models
 # ============================================================================
+
+history_message = api.model(
+    "HistoryMessage",
+    {
+        "role": fields.String(required=True, description="Message role: user or assistant"),
+        "content": fields.String(required=True, description="Message content"),
+    },
+)
 
 retrieve_request = api.model(
     "RetrieveRequest",
@@ -39,6 +48,10 @@ retrieve_request = api.model(
         "space": fields.String(description="Graph space name (optional)"),
         "use_llm": fields.Boolean(
             default=False, description="Generate answer using LLM"
+        ),
+        "history": fields.List(
+            fields.Nested(history_message),
+            description="Chat history for context",
         ),
     },
 )
@@ -170,6 +183,108 @@ class Health(Resource):
             "status": "healthy",
             "service": "retrieval",
         }
+
+
+@api.route("/stream")
+class RetrieveStream(Resource):
+    """Streaming knowledge retrieval endpoint."""
+
+    @api.doc("retrieve_stream")
+    @api.expect(retrieve_request)
+    def post(self):
+        """
+        Retrieve knowledge with streaming LLM response.
+
+        Returns Server-Sent Events (SSE) stream with:
+        - event: context - retrieval results and graph context
+        - event: token - individual LLM tokens
+        - event: done - completion signal
+        - event: error - error message
+        """
+        data = request.get_json() or {}
+
+        # Validate required fields
+        query = data.get("query", "").strip()
+        if not query:
+            return Response(
+                f"event: error\ndata: {json.dumps({'error': 'Query cannot be empty'})}\n\n",
+                mimetype="text/event-stream",
+            )
+
+        # Extract parameters
+        search_type = data.get("search_type", "hybrid")
+        if search_type not in ("hybrid", "vector", "graph"):
+            search_type = "hybrid"
+
+        def generate() -> Generator[str, None, None]:
+            """Generate SSE stream."""
+            try:
+                service = get_retrieval_service()
+
+                # Step 1: Perform retrieval (without LLM)
+                response = service.retrieve(
+                    query=query,
+                    search_type=search_type,
+                    collection=data.get("collection"),
+                    space=data.get("space"),
+                    top_k=data.get("top_k", 10),
+                    expand_graph=data.get("expand_graph", True),
+                    graph_depth=data.get("graph_depth", 2),
+                    use_llm=False,  # Don't use LLM yet
+                )
+
+                # Send context first
+                context_data = {
+                    "success": response.success,
+                    "query": response.query,
+                    "results": [
+                        {
+                            "id": r.id,
+                            "name": r.name,
+                            "type": r.type,
+                            "score": r.score,
+                            "text": r.text,
+                            "is_entity": r.is_entity,
+                            "properties": r.properties,
+                        }
+                        for r in response.results
+                    ],
+                    "graph_context": response.graph_context.to_dict() if response.graph_context else None,
+                    "sources": list(set(response.sources)),
+                    "errors": response.errors,
+                    "timing": response.timing.to_dict(),
+                }
+                yield f"event: context\ndata: {json.dumps(context_data, ensure_ascii=False)}\n\n"
+
+                # Step 2: Stream LLM response (always call LLM when use_llm is True)
+                if data.get("use_llm", True):
+                    try:
+                        answer_service = service.answer_generation
+                        history = data.get("history", [])
+                        for token in answer_service.generate_answer_stream(
+                            query, response.results, response.graph_context, history
+                        ):
+                            yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+                    except Exception as e:
+                        logger.error(f"LLM streaming failed: {e}")
+                        yield f"event: error\ndata: {json.dumps({'error': f'LLM error: {str(e)}'})}\n\n"
+
+                # Done
+                yield f"event: done\ndata: {json.dumps({'status': 'complete'})}\n\n"
+
+            except Exception as e:
+                logger.error(f"Stream retrieval failed: {e}")
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 
 # ============================================================================

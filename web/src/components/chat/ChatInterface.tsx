@@ -16,13 +16,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { MessageBubble } from "./MessageBubble";
-import { retrieve } from "@/lib/api";
-import type {
-  ChatMessage,
-  ChatSettings,
-  SearchType,
-  DEFAULT_CHAT_SETTINGS,
-} from "@/lib/types";
+import { retrieveStream, StreamContextEvent } from "@/lib/api";
+import type { ChatMessage, ChatSettings, SearchType } from "@/lib/types";
 
 const defaultSettings: ChatSettings = {
   searchType: "hybrid",
@@ -36,6 +31,7 @@ export function ChatInterface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [settings, setSettings] = useState<ChatSettings>(defaultSettings);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -49,6 +45,124 @@ export function ChatInterface() {
 
   // Generate unique ID
   const generateId = () => Math.random().toString(36).substring(2, 9);
+
+  // Build chat history from messages (excluding current loading message)
+  const buildHistory = useCallback((excludeId?: string) => {
+    return messages
+      .filter((msg) => msg.id !== excludeId && !msg.isLoading && msg.content)
+      .slice(-10) // Keep last 10 messages for context
+      .map((msg) => ({
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      }));
+  }, [messages]);
+
+  // Execute streaming query
+  const executeStreamQuery = useCallback(
+    async (query: string, assistantId: string) => {
+      let hasError = false;
+      const history = buildHistory(assistantId);
+
+      try {
+        await retrieveStream(
+          {
+            query,
+            search_type: settings.searchType,
+            top_k: settings.topK,
+            expand_graph: settings.expandGraph,
+            graph_depth: settings.graphDepth,
+            use_llm: settings.useLLM,
+            history,
+          },
+          {
+            onContext: (context: StreamContextEvent) => {
+              // Update with context (results, graph_context) and immediately show streaming cursor
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        results: context.results,
+                        graph_context: context.graph_context,
+                        sources: context.sources,
+                        timing: context.timing,
+                        content: "", // Start empty, cursor will show via isStreaming
+                        isLoading: false,
+                        isStreaming: true, // Show cursor immediately
+                      }
+                    : msg
+                )
+              );
+            },
+            onToken: (token: string) => {
+              // Append token to content
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        content: msg.content + token,
+                      }
+                    : msg
+                )
+              );
+            },
+            onDone: () => {
+              // Mark streaming complete
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        isStreaming: false,
+                        isError: false,
+                        originalQuery: query,
+                      }
+                    : msg
+                )
+              );
+            },
+            onError: (error: string) => {
+              hasError = true;
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        content: error,
+                        isLoading: false,
+                        isStreaming: false,
+                        isError: true,
+                        originalQuery: query,
+                      }
+                    : msg
+                )
+              );
+            },
+          }
+        );
+
+        return !hasError;
+      } catch (error) {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  content: `${error instanceof Error ? error.message : "未知错误"}`,
+                  isLoading: false,
+                  isStreaming: false,
+                  isError: true,
+                  originalQuery: query,
+                }
+              : msg
+          )
+        );
+        return false;
+      }
+    },
+    [settings, buildHistory]
+  );
 
   // Handle send message
   const handleSend = useCallback(async () => {
@@ -72,60 +186,49 @@ export function ChatInterface() {
       timestamp: new Date(),
       isLoading: true,
       search_type: settings.searchType,
+      originalQuery: trimmedInput,
     };
 
     setMessages((prev) => [...prev, userMessage, loadingMessage]);
     setInput("");
     setIsLoading(true);
 
-    try {
-      const response = await retrieve({
-        query: trimmedInput,
-        search_type: settings.searchType,
-        top_k: settings.topK,
-        expand_graph: settings.expandGraph,
-        graph_depth: settings.graphDepth,
-        use_llm: settings.useLLM,
-      });
+    await executeStreamQuery(trimmedInput, assistantId);
+    setIsLoading(false);
+  }, [input, isLoading, settings.searchType, executeStreamQuery]);
 
-      // Update assistant message with response
+  // Handle retry
+  const handleRetry = useCallback(
+    async (messageId: string) => {
+      // Find the message and its original query
+      const message = messages.find((m) => m.id === messageId);
+      if (!message || !message.originalQuery) return;
+
+      const query = message.originalQuery;
+
+      // Set loading state
+      setRetryingId(messageId);
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === assistantId
+          msg.id === messageId
             ? {
                 ...msg,
-                content:
-                  response.answer ||
-                  (response.errors.length > 0
-                    ? `错误: ${response.errors.join(", ")}`
-                    : "未找到相关信息"),
-                results: response.results,
-                graph_context: response.graph_context,
-                sources: response.sources,
-                isLoading: false,
+                isLoading: true,
+                isError: false,
+                content: "",
+                results: undefined,
+                graph_context: undefined,
+                timestamp: new Date(),
               }
             : msg
         )
       );
-    } catch (error) {
-      // Update with error
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantId
-            ? {
-                ...msg,
-                content: `请求失败: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                isLoading: false,
-              }
-            : msg
-        )
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [input, isLoading, settings]);
+
+      await executeStreamQuery(query, messageId);
+      setRetryingId(null);
+    },
+    [messages, executeStreamQuery]
+  );
 
   // Handle key press
   const handleKeyPress = useCallback(
@@ -230,9 +333,9 @@ export function ChatInterface() {
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 px-4" ref={scrollRef}>
+      <ScrollArea className="flex-1" ref={scrollRef}>
         {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center py-12">
+          <div className="flex flex-col items-center justify-center h-full text-center py-12 px-4">
             <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
               <Send className="h-8 w-8 text-primary" />
             </div>
@@ -265,39 +368,48 @@ export function ChatInterface() {
             </div>
           </div>
         ) : (
-          <div className="py-4">
+          <div className="max-w-3xl mx-auto px-4">
             {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onRetry={handleRetry}
+                isRetrying={retryingId === message.id}
+              />
             ))}
           </div>
         )}
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="border-t p-4">
-        <div className="flex gap-2">
-          <Textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyPress}
-            placeholder="输入问题，按 Enter 发送..."
-            rows={1}
-            className="min-h-[44px] max-h-32 resize-none"
-            disabled={isLoading}
-          />
-          <Button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            size="icon"
-            className="h-11 w-11 shrink-0"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
+      <div className="border-t bg-background">
+        <div className="max-w-3xl mx-auto p-4">
+          <div className="relative flex items-end gap-2 bg-muted/50 rounded-2xl border border-border/50 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+            <Textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyPress}
+              placeholder="输入问题..."
+              rows={1}
+              className="flex-1 min-h-[52px] max-h-40 resize-none border-0 bg-transparent px-4 py-3.5 text-[15px] placeholder:text-muted-foreground/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+              disabled={isLoading}
+            />
+            <div className="flex items-center gap-1 p-2">
+              <Button
+                onClick={handleSend}
+                disabled={!input.trim() || isLoading}
+                size="icon"
+                className="h-9 w-9 rounded-xl shrink-0"
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground/70 mt-2 text-center">
+            按 Enter 发送，Shift + Enter 换行
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          按 Enter 发送，Shift + Enter 换行
-        </p>
       </div>
     </div>
   );

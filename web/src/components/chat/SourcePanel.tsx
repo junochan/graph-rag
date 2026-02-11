@@ -7,10 +7,9 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
-  Link2,
   ExternalLink,
-  X,
   ArrowRight,
+  Clock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { RetrievalResult, GraphContext, GraphEdge, GraphNode } from "@/lib/types";
+import type { RetrievalResult, GraphContext, GraphEdge, GraphNode, TimingInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Maximum edges to show inline
@@ -37,15 +36,25 @@ interface SourcePanelProps {
   results: RetrievalResult[];
   graphContext: GraphContext | null;
   searchType: "hybrid" | "vector" | "graph";
+  timing?: TimingInfo;
+}
+
+// Format milliseconds to human readable string
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 export function SourcePanel({
   results,
   graphContext,
   searchType,
+  timing,
 }: SourcePanelProps) {
   const [isVectorOpen, setIsVectorOpen] = useState(false);
-  const [isGraphOpen, setIsGraphOpen] = useState(true);
+  const [isGraphOpen, setIsGraphOpen] = useState(false);
 
   // Separate vector results (chunks) and entity results
   const vectorResults = results.filter((r) => !r.is_entity);
@@ -61,10 +70,10 @@ export function SourcePanel({
   }
 
   return (
-    <div className="mt-3 space-y-2 border-t pt-3">
+    <div className="mt-4 space-y-2 bg-muted/30 rounded-lg p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <FileText className="h-3.5 w-3.5" />
-        <span>数据来源</span>
+        <span className="font-medium">数据来源</span>
         <Badge variant="outline" className="ml-auto text-xs h-5">
           {searchType === "hybrid"
             ? "混合检索"
@@ -89,6 +98,12 @@ export function SourcePanel({
                 <Badge variant="secondary" className="text-xs h-5">
                   {vectorResults.length} 条
                 </Badge>
+                {timing && timing.vector_search_ms > 0 && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                    <Clock className="h-3 w-3" />
+                    {formatDuration(timing.vector_search_ms)}
+                  </span>
+                )}
               </div>
               {isVectorOpen ? (
                 <ChevronUp className="h-3.5 w-3.5" />
@@ -154,6 +169,12 @@ export function SourcePanel({
                 <Badge variant="secondary" className="text-xs h-5">
                   {nodes.length || entityResults.length} 实体 / {edges.length} 关系
                 </Badge>
+                {timing && (timing.graph_search_ms > 0 || timing.graph_expansion_ms > 0) && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                    <Clock className="h-3 w-3" />
+                    {formatDuration(timing.graph_search_ms + timing.graph_expansion_ms)}
+                  </span>
+                )}
               </div>
               {isGraphOpen ? (
                 <ChevronUp className="h-3.5 w-3.5" />

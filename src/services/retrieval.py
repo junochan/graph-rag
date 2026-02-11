@@ -4,6 +4,7 @@ graph search, and hybrid retrieval.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,6 +81,25 @@ class GraphContext:
 
 
 @dataclass
+class TimingInfo:
+    """Timing information for retrieval operations."""
+    vector_search_ms: float = 0
+    graph_search_ms: float = 0
+    graph_expansion_ms: float = 0
+    llm_ms: float = 0
+    total_ms: float = 0
+    
+    def to_dict(self) -> dict:
+        return {
+            "vector_search_ms": round(self.vector_search_ms, 1),
+            "graph_search_ms": round(self.graph_search_ms, 1),
+            "graph_expansion_ms": round(self.graph_expansion_ms, 1),
+            "llm_ms": round(self.llm_ms, 1),
+            "total_ms": round(self.total_ms, 1),
+        }
+
+
+@dataclass
 class RetrievalResponse:
     """Complete retrieval response."""
     success: bool
@@ -89,6 +109,7 @@ class RetrievalResponse:
     answer: str | None = None
     sources: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    timing: TimingInfo = field(default_factory=TimingInfo)
     
     def to_dict(self) -> dict:
         return {
@@ -110,7 +131,12 @@ class RetrievalResponse:
             "answer": self.answer,
             "sources": list(set(self.sources)),
             "errors": self.errors,
+            "timing": self.timing.to_dict(),
         }
+
+
+# Minimum similarity score threshold for vector search results
+MIN_SIMILARITY_THRESHOLD = 0.4
 
 
 class VectorSearchService:
@@ -137,9 +163,16 @@ class VectorSearchService:
         query: str,
         collection: str,
         top_k: int = 10,
+        min_score: float = MIN_SIMILARITY_THRESHOLD,
     ) -> tuple[list[RetrievalResult], list[str]]:
         """
         Perform vector similarity search.
+        
+        Args:
+            query: Search query
+            collection: Vector collection name
+            top_k: Maximum results to return
+            min_score: Minimum similarity score threshold (0-1)
         
         Returns:
             Tuple of (results, sources)
@@ -151,6 +184,13 @@ class VectorSearchService:
         vector_results = self.vector_store.search(collection, query_embedding, top_k)
         
         for hit in vector_results:
+            score = hit.get("score", 0)
+            
+            # Filter out low-relevance results
+            if score < min_score:
+                logger.debug(f"Skipping result with low score: {score:.3f} < {min_score}")
+                continue
+            
             payload = hit.get("payload", {})
             is_entity = payload.get("is_entity", False)
             item_id = payload.get("entity_id") or payload.get("chunk_id") or hit.get("id")
@@ -159,7 +199,7 @@ class VectorSearchService:
                 id=item_id,
                 name=payload.get("name", payload.get("document_name", "")),
                 type="entity" if is_entity else "chunk",
-                score=hit.get("score", 0),
+                score=score,
                 text=payload.get("text", payload.get("description", "")),
                 is_entity=is_entity,
                 properties={
@@ -544,41 +584,81 @@ class AnswerGenerationService:
         
         return "\n".join(parts)
     
+    def _build_messages(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        graph_context: GraphContext | None,
+        history: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        """Build messages for LLM prompt with optional chat history."""
+        context = self.build_context(results, graph_context)
+        messages: list[dict[str, str]] = []
+        
+        # System message
+        if not context.strip():
+            messages.append({
+                "role": "system",
+                "content": "你是一个知识图谱问答助手。当知识库中没有相关信息时，请基于你的通用知识回答问题，并说明这是基于通用知识而非知识库的回答。请用中文回答。",
+            })
+        else:
+            messages.append({
+                "role": "system",
+                "content": "你是一个知识图谱问答助手，基于知识图谱中的信息回答问题。请用中文回答。",
+            })
+        
+        # Add chat history for context
+        if history:
+            for msg in history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        
+        # Build current user message
+        if not context.strip():
+            messages.append({"role": "user", "content": query})
+        else:
+            prompt = f"""基于以下知识图谱中的上下文信息，请回答用户的问题。
+
+# 上下文
+{context}
+
+# 问题
+{query}
+
+# 回答要求
+1. 优先基于提供的上下文回答
+2. 如果上下文信息不足，可以结合通用知识补充说明
+3. 引用相关的实体和关系
+4. 回答要简洁但全面
+
+# 回答:"""
+            messages.append({"role": "user", "content": prompt})
+        
+        return messages
+
     def generate_answer(
         self,
         query: str,
         results: list[RetrievalResult],
         graph_context: GraphContext | None,
+        history: list[dict[str, str]] | None = None,
     ) -> str:
         """Generate answer using LLM based on context."""
-        context = self.build_context(results, graph_context)
-        
-        prompt = f"""Based on the following context from a knowledge graph, please answer the user's question.
-
-# Context
-{context}
-
-# Question
-{query}
-
-# Instructions
-1. Answer based ONLY on the provided context
-2. If the context doesn't contain enough information, clearly state that
-3. Cite specific entities and relationships when relevant
-4. Be concise but comprehensive
-5. If there are multiple relevant pieces of information, synthesize them
-
-# Answer:"""
-        
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a knowledgeable assistant that answers questions based on a knowledge graph. Always cite your sources.",
-            },
-            {"role": "user", "content": prompt},
-        ]
-        
+        messages = self._build_messages(query, results, graph_context, history)
         return self.llm.chat(messages)
+    
+    def generate_answer_stream(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        graph_context: GraphContext | None,
+        history: list[dict[str, str]] | None = None,
+    ):
+        """Generate streaming answer using LLM based on context."""
+        messages = self._build_messages(query, results, graph_context, history)
+        return self.llm.chat_stream(messages)
 
 
 class RetrievalService:
@@ -586,6 +666,9 @@ class RetrievalService:
     Main retrieval service that orchestrates vector search, graph search,
     and answer generation.
     """
+    
+    # Minimum average score to trigger graph expansion
+    MIN_AVG_SCORE_FOR_GRAPH = 0.5
     
     def __init__(self):
         self.vector_search = VectorSearchService()
@@ -621,6 +704,9 @@ class RetrievalService:
         collection = collection or settings.vector_store.qdrant_collection
         space = space or settings.nebula.space
         
+        total_start = time.perf_counter()
+        timing = TimingInfo()
+        
         response = RetrievalResponse(
             success=True,
             query=query,
@@ -629,25 +715,33 @@ class RetrievalService:
         # Step 1: Search
         if search_type in ("hybrid", "vector"):
             try:
+                start = time.perf_counter()
                 results, sources = self.vector_search.search(query, collection, top_k)
+                timing.vector_search_ms = (time.perf_counter() - start) * 1000
                 response.results.extend(results)
                 response.sources.extend(sources)
+                logger.info(f"Vector search returned {len(results)} results above threshold")
             except Exception as e:
                 response.errors.append(f"Vector search error: {e}")
                 logger.error(f"Vector search failed: {e}")
         
         if search_type == "graph":
             try:
+                start = time.perf_counter()
                 results = self.graph_search.search(query, space)
+                timing.graph_search_ms = (time.perf_counter() - start) * 1000
                 response.results.extend(results)
                 expand_graph = True  # Force graph expansion for graph mode
             except Exception as e:
                 response.errors.append(f"Graph search error: {e}")
                 logger.error(f"Graph search failed: {e}")
         
-        # Step 2: Graph expansion
-        if expand_graph and response.results:
+        # Step 2: Graph expansion (with quality check)
+        should_expand_graph = expand_graph and self._should_expand_graph(response.results, search_type)
+        
+        if should_expand_graph:
             try:
+                start = time.perf_counter()
                 # Collect entity IDs
                 entity_ids = []
                 id_to_name = {}
@@ -676,23 +770,67 @@ class RetrievalService:
                     response.graph_context = self.graph_expansion.expand(
                         entity_ids, space, graph_depth, id_to_name
                     )
+                timing.graph_expansion_ms = (time.perf_counter() - start) * 1000
             
             except Exception as e:
                 response.errors.append(f"Graph expansion error: {e}")
                 logger.error(f"Graph expansion failed: {e}")
+        else:
+            logger.info(f"Skipping graph expansion: expand_graph={expand_graph}, results_quality_check={self._should_expand_graph(response.results, search_type) if response.results else False}")
         
         # Step 3: Answer generation
         if use_llm and (response.results or response.graph_context):
             try:
+                start = time.perf_counter()
                 response.answer = self.answer_generation.generate_answer(
                     query, response.results, response.graph_context
                 )
+                timing.llm_ms = (time.perf_counter() - start) * 1000
             except Exception as e:
                 response.errors.append(f"LLM error: {e}")
                 logger.error(f"Answer generation failed: {e}")
         
+        timing.total_ms = (time.perf_counter() - total_start) * 1000
+        response.timing = timing
+        
         response.success = len(response.errors) == 0 or len(response.results) > 0
         return response
+    
+    def _should_expand_graph(self, results: list[RetrievalResult], search_type: str) -> bool:
+        """
+        Determine if graph expansion should be performed based on result quality.
+        
+        Args:
+            results: Vector search results
+            search_type: Type of search being performed
+        
+        Returns:
+            True if graph expansion should proceed
+        """
+        # Always expand for explicit graph search
+        if search_type == "graph":
+            return True
+        
+        # No results, no expansion
+        if not results:
+            return False
+        
+        # Check if we have high-quality results
+        # Calculate average score of top results
+        top_scores = [r.score for r in results[:5]]
+        if not top_scores:
+            return False
+        
+        avg_score = sum(top_scores) / len(top_scores)
+        max_score = max(top_scores)
+        
+        # Require either a high max score or decent average
+        if max_score >= 0.6 or avg_score >= self.MIN_AVG_SCORE_FOR_GRAPH:
+            logger.info(f"Graph expansion approved: max_score={max_score:.3f}, avg_score={avg_score:.3f}")
+            return True
+        
+        logger.info(f"Graph expansion skipped: max_score={max_score:.3f}, avg_score={avg_score:.3f} (threshold: {self.MIN_AVG_SCORE_FOR_GRAPH})")
+        return False
     
     def _find_entities_from_chunks(self, chunk_ids: list[str], space: str) -> list[str]:
         """Find entities extracted from chunks."""
