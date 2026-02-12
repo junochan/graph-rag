@@ -1,8 +1,37 @@
 # Graph RAG
 
-基于 NebulaGraph 图数据库的知识图谱检索增强生成 (RAG) 系统。支持自动实体关系抽取、知识图谱构建和混合检索（向量 + 图遍历），通过 LLM 基于检索结果生成答案。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
+[![CI](https://github.com/junochan/graph-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/junochan/graph-rag/actions)
 
-## 架构
+A knowledge graph powered Retrieval-Augmented Generation (RAG) system built on **NebulaGraph** and **Qdrant**. It automatically extracts entities and relations from documents, builds a knowledge graph, and performs hybrid retrieval (vector search + graph traversal) to generate accurate answers via LLM.
+
+[中文文档](./README_zh.md)
+
+## Features
+
+- **Hybrid Retrieval** — Combines vector similarity search (Qdrant) with graph traversal (NebulaGraph) for comprehensive context retrieval
+- **Automatic Entity Extraction** — LLM-powered entity and relation extraction from PDF, Word, and plain text documents
+- **Multi-hop Reasoning** — Configurable N-hop graph traversal (1/2/3 hops) for deep knowledge discovery
+- **Streaming SSE Responses** — Real-time streaming answers with Server-Sent Events
+- **Multi-turn Conversation** — Chat history support for contextual follow-up questions
+- **Knowledge Graph Visualization** — Interactive graph explorer built with React Flow
+- **Docker One-Click Deploy** — Full stack deployment with `docker compose up`
+- **Pluggable LLM/Embedding** — Works with OpenAI, Azure OpenAI, Ollama, or any OpenAI-compatible API
+- **Swagger API Docs** — Auto-generated REST API documentation via Flask-RESTX
+
+## Screenshots
+
+| Chat Interface | Knowledge Graph Visualization |
+|:-:|:-:|
+| ![Chat UI](docs/images/chat.png) | ![Knowledge Graph](docs/images/graph_view.png) |
+
+| Knowledge Building |
+|:-:|
+| ![Build](docs/images/build.png) |
+
+## Architecture
 
 ```
                          ┌──────────────┐
@@ -32,96 +61,101 @@
          │          │           │                  │
   ┌──────▼──────┐ ┌─▼───────────▼──┐              │
   │ NebulaGraph │ │     Qdrant     │              │
-  │ (知识图谱)   │ │   (向量存储)    │              │
+  │ (Graph DB)  │ │ (Vector Store) │              │
   └──────┬──────┘ └───────┬────────┘              │
          │                │                       │
          └────────┬───────┘                       │
           ┌───────▼────────┐                      │
           │ Hybrid Retrieval│──────────────────────┘
-          │ (向量 + 图遍历)  │
+          │(Vector + Graph) │
           └────────────────┘
 ```
 
-## 实现原理
+## How It Works
 
-### 知识构建流程
+### Knowledge Building Pipeline
 
-1. **文档解析** — 将 PDF / Word / 纯文本拆分为文本块 (Chunk)
-2. **实体关系抽取** — LLM 从每个文本块中提取实体和关系，映射到预定义的 Schema（8 种 Tag + 12 种 Edge Type）
-3. **双存储写入** — 实体和关系写入 NebulaGraph 图数据库；文本块和实体描述生成 Embedding 向量写入 Qdrant
+1. **Document Parsing** — Splits PDF / Word / plain text into text chunks
+2. **Entity & Relation Extraction** — LLM extracts entities and relations from each chunk, mapped to a predefined schema (8 Tag types + 12 Edge types)
+3. **Dual Storage** — Entities and relations are written to NebulaGraph; text chunks and entity descriptions are embedded and stored in Qdrant
 
-### 混合检索流程
+### Hybrid Retrieval Pipeline
 
-1. **向量召回** — 用户查询经 Embedding 后在 Qdrant 中检索 Top-K 相似节点
-2. **图遍历扩展** — 以向量召回的实体为起点，在 NebulaGraph 中进行 N-hop 遍历（默认 2 跳），获取关联上下文
-3. **上下文融合** — 合并向量检索结果和图遍历结果，去重后构建结构化上下文
-4. **LLM 生成** — 将融合上下文作为 Prompt 的一部分，由 LLM 生成最终答案
+1. **Vector Recall** — User query is embedded and used to retrieve Top-K similar nodes from Qdrant
+2. **Graph Expansion** — Starting from recalled entities, performs N-hop traversal in NebulaGraph to gather related context
+3. **Context Fusion** — Merges vector and graph results, deduplicates, and builds structured context
+4. **LLM Generation** — Fused context is injected into the prompt for the LLM to generate the final answer
 
-### 技术栈
+## Tech Stack
 
-| 层 | 技术 | 说明 |
-|---|------|------|
-| 前端 | Next.js + React + Tailwind | 聊天界面 + 知识图谱可视化 |
-| 后端 | Flask + Flask-RESTX | REST API + Swagger 文档 |
-| 图数据库 | NebulaGraph | 存储实体和关系 |
-| 向量数据库 | Qdrant | 语义相似度检索 |
-| LLM / Embedding | OpenAI / Azure / Ollama | 可插拔，支持任意 OpenAI 兼容接口 |
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Frontend | Next.js 15 + React 19 + Tailwind CSS | Chat UI + Knowledge graph visualization |
+| Backend | Flask + Flask-RESTX + Pydantic | REST API + Swagger docs |
+| Graph DB | NebulaGraph | Entity and relation storage |
+| Vector DB | Qdrant | Semantic similarity search |
+| LLM / Embedding | OpenAI / Azure / Ollama | Pluggable, any OpenAI-compatible endpoint |
+| Package Manager | uv (backend) / npm (frontend) | Fast dependency management |
 
-## 安装与部署
+## Getting Started
 
-### Docker 部署（推荐）
+### Docker Deployment (Recommended)
 
-一键部署全部服务（NebulaGraph、Qdrant、后端、前端）：
+Deploy all services (NebulaGraph, Qdrant, backend, frontend) with one command:
 
 ```bash
-# 1. 复制环境变量并填写 API Key
+# 1. Copy env file and fill in your API key
 cp .env.docker.example .env
 
-# 2. 启动全部服务
+# 2. Start all services
 docker compose up -d
 ```
 
-服务地址：
+Service endpoints:
 
-| 服务 | 地址 |
-|------|------|
-| 前端 | http://localhost:3000 |
-| 后端 Swagger | http://localhost:8008/docs |
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Backend Swagger | http://localhost:8008/docs |
 | NebulaGraph Studio | http://localhost:7001 |
 | Qdrant Dashboard | http://localhost:6333/dashboard |
 
 ```bash
-# 停止服务
+# Stop services
 docker compose down
 
-# 停止并清空数据
+# Stop and remove data
 docker compose down -v
 
-# 重新构建某个服务
+# Rebuild a specific service
 docker compose up -d --build backend
 ```
 
-### 本地开发部署
+### Local Development
 
 ```bash
-# 1. 安装依赖
+# 1. Install dependencies
 uv sync
 
-# 2. 配置环境变量
+# 2. Configure environment
 cp .env.example .env
-# 编辑 .env 填写 NebulaGraph、Qdrant、OpenAI 配置
+# Edit .env with your NebulaGraph, Qdrant, and OpenAI settings
 
-# 3. 启动 NebulaGraph 和 Qdrant
+# 3. Start NebulaGraph and Qdrant
 docker run -d --name nebula -p 9669:9669 -p 19669:19669 vesoft/nebula-graph:v3.6.0
 docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
 
-# 4. 初始化图数据库 Schema
+# 4. Initialize graph database schema
 uv run python scripts/init_graph.py
 
-# 5. 启动后端
+# 5. Start backend
 uv run python main.py
 ```
 
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-MIT
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
