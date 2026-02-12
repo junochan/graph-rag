@@ -83,6 +83,7 @@ class GraphContext:
 @dataclass
 class TimingInfo:
     """Timing information for retrieval operations."""
+    rewrite_ms: float = 0
     vector_search_ms: float = 0
     graph_search_ms: float = 0
     graph_expansion_ms: float = 0
@@ -91,6 +92,7 @@ class TimingInfo:
     
     def to_dict(self) -> dict:
         return {
+            "rewrite_ms": round(self.rewrite_ms, 1),
             "vector_search_ms": round(self.vector_search_ms, 1),
             "graph_search_ms": round(self.graph_search_ms, 1),
             "graph_expansion_ms": round(self.graph_expansion_ms, 1),
@@ -104,6 +106,7 @@ class RetrievalResponse:
     """Complete retrieval response."""
     success: bool
     query: str
+    rewritten_query: str | None = None
     results: list[RetrievalResult] = field(default_factory=list)
     graph_context: GraphContext | None = None
     answer: str | None = None
@@ -112,7 +115,7 @@ class RetrievalResponse:
     timing: TimingInfo = field(default_factory=TimingInfo)
     
     def to_dict(self) -> dict:
-        return {
+        result = {
             "success": self.success,
             "query": self.query,
             "results": [
@@ -133,6 +136,9 @@ class RetrievalResponse:
             "errors": self.errors,
             "timing": self.timing.to_dict(),
         }
+        if self.rewritten_query:
+            result["rewritten_query"] = self.rewritten_query
+        return result
 
 
 # Minimum similarity score threshold for vector search results
@@ -494,6 +500,27 @@ class GraphExpansionService:
             
             return neighbors_to_expand
         
+        # Add starting entities to the nodes list so they appear in the result
+        for eid in entity_ids[:10]:
+            if eid not in seen_nodes:
+                eid_name = name_map.get(eid, eid)
+                # Try to determine the entity type from the graph
+                eid_type = "entity"
+                try:
+                    type_query = f'MATCH (n) WHERE id(n) == "{eid}" RETURN labels(n) AS labels LIMIT 1'
+                    type_result = self.graph_service.execute(type_query, space)
+                    if type_result["success"] and type_result["data"]:
+                        labels = type_result["data"][0].get("labels", []) or []
+                        if labels:
+                            eid_type = labels[0]
+                except Exception:
+                    pass
+                nodes.append(GraphNode(
+                    id=eid,
+                    name=eid_name,
+                    type=eid_type,
+                ))
+        
         # BFS expansion with depth tracking
         for entity_id in entity_ids[:10]:
             pending_expansion.append((entity_id, 1))
@@ -670,12 +697,92 @@ class RetrievalService:
     # Minimum average score to trigger graph expansion
     MIN_AVG_SCORE_FOR_GRAPH = 0.5
     
+    # Pronouns and vague references that indicate the query needs rewriting
+    _COREFERENCE_INDICATORS = {
+        "他", "她", "它", "他们", "她们", "它们", "这个", "那个",
+        "这些", "那些", "该", "其", "前者", "后者", "上述",
+        "这家", "那家", "这位", "那位", "此人", "对方",
+    }
+
     def __init__(self):
         self.vector_search = VectorSearchService()
         self.graph_search = GraphSearchService()
         self.graph_expansion = GraphExpansionService()
         self.answer_generation = AnswerGenerationService()
-    
+        self._llm = None
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            self._llm = get_llm()
+        return self._llm
+
+    def _needs_rewrite(self, query: str, history: list[dict[str, str]] | None) -> bool:
+        """
+        Quick heuristic check: does the query contain pronouns / vague references
+        that cannot be understood without conversation history?
+        """
+        if not history:
+            return False
+        # Check if query contains coreference indicators
+        for indicator in self._COREFERENCE_INDICATORS:
+            if indicator in query:
+                return True
+        # Very short queries in multi-turn are likely follow-ups
+        if len(query) <= 8:
+            return True
+        return False
+
+    def _rewrite_query(self, query: str, history: list[dict[str, str]]) -> str:
+        """
+        Use LLM to rewrite a follow-up query into a self-contained query
+        by resolving pronouns and implicit references from chat history.
+        """
+        # Build condensed history (last 6 messages max)
+        recent = history[-6:]
+        history_text = "\n".join(
+            f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('content', '')}"
+            for m in recent
+        )
+
+        prompt = f"""你是查询改写助手。根据对话历史，将用户最新的问题改写为一个独立的、完整的查询语句。
+
+要求：
+1. 将代词（他、她、它、他们等）替换为对话中提到的具体实体名称
+2. 补充省略的主语或宾语
+3. 保持原始问题的意图不变
+4. 只输出改写后的查询语句，不要任何解释
+
+对话历史:
+{history_text}
+
+当前问题: {query}
+
+改写后的查询:"""
+
+        try:
+            rewritten = self.llm.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=200,
+            ).strip()
+
+            # Sanity check: if LLM returns something too long or empty, fallback
+            if not rewritten or len(rewritten) > len(query) * 5:
+                return query
+
+            # Remove quotes if LLM wraps the result
+            if (rewritten.startswith('"') and rewritten.endswith('"')) or \
+               (rewritten.startswith("'") and rewritten.endswith("'")):
+                rewritten = rewritten[1:-1]
+
+            logger.info(f"Query rewritten: '{query}' -> '{rewritten}'")
+            return rewritten
+
+        except Exception as e:
+            logger.warning(f"Query rewrite failed, using original: {e}")
+            return query
+
     def retrieve(
         self,
         query: str,
@@ -685,7 +792,8 @@ class RetrievalService:
         top_k: int = 10,
         expand_graph: bool = True,
         graph_depth: int = 2,
-        use_llm: bool = False,
+        use_llm: bool = True,
+        history: list[dict[str, str]] | None = None,
     ) -> RetrievalResponse:
         """
         Perform retrieval using specified strategy.
@@ -699,6 +807,7 @@ class RetrievalService:
             expand_graph: Whether to expand graph context
             graph_depth: Depth of graph expansion
             use_llm: Whether to generate answer using LLM
+            history: Chat history for multi-turn conversation context
         """
         settings = get_settings()
         collection = collection or settings.vector_store.qdrant_collection
@@ -712,11 +821,24 @@ class RetrievalService:
             query=query,
         )
         
-        # Step 1: Search
+        # Step 0: Query rewriting for multi-turn conversations
+        search_query = query  # The query actually used for retrieval
+        if self._needs_rewrite(query, history):
+            try:
+                start = time.perf_counter()
+                search_query = self._rewrite_query(query, history)
+                timing.rewrite_ms = (time.perf_counter() - start) * 1000
+                if search_query != query:
+                    response.rewritten_query = search_query
+            except Exception as e:
+                logger.warning(f"Query rewrite failed: {e}")
+                search_query = query
+        
+        # Step 1: Search (use rewritten query for better retrieval)
         if search_type in ("hybrid", "vector"):
             try:
                 start = time.perf_counter()
-                results, sources = self.vector_search.search(query, collection, top_k)
+                results, sources = self.vector_search.search(search_query, collection, top_k)
                 timing.vector_search_ms = (time.perf_counter() - start) * 1000
                 response.results.extend(results)
                 response.sources.extend(sources)
@@ -728,7 +850,7 @@ class RetrievalService:
         if search_type == "graph":
             try:
                 start = time.perf_counter()
-                results = self.graph_search.search(query, space)
+                results = self.graph_search.search(search_query, space)
                 timing.graph_search_ms = (time.perf_counter() - start) * 1000
                 response.results.extend(results)
                 expand_graph = True  # Force graph expansion for graph mode
@@ -778,12 +900,12 @@ class RetrievalService:
         else:
             logger.info(f"Skipping graph expansion: expand_graph={expand_graph}, results_quality_check={self._should_expand_graph(response.results, search_type) if response.results else False}")
         
-        # Step 3: Answer generation
+        # Step 3: Answer generation (use rewritten query so LLM context is consistent)
         if use_llm and (response.results or response.graph_context):
             try:
                 start = time.perf_counter()
                 response.answer = self.answer_generation.generate_answer(
-                    query, response.results, response.graph_context
+                    search_query, response.results, response.graph_context, history
                 )
                 timing.llm_ms = (time.perf_counter() - start) * 1000
             except Exception as e:

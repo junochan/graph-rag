@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[codz]
+*.egg-info
+.venv
+venv
+env
+.mypy_cache
+.ruff_cache
+.pytest_cache
+htmlcov
+.coverage
+
+# IDE
+.vscode
+.idea
+.cursor*
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Frontend (built separately)
+web/
+
+# Docs & misc
+*.md
+LICENSE
+.github/
+scripts/
+tests/

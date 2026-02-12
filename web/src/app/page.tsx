@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { MessageSquare, Upload, Network, ArrowRight } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 
 const features = [
   {
@@ -51,27 +50,22 @@ export default function HomePage() {
         {features.map((feature) => {
           const Icon = feature.icon;
           return (
-            <Card key={feature.href} className="group hover:shadow-lg transition-shadow">
-              <CardHeader>
-                <div
-                  className={`w-12 h-12 rounded-lg ${feature.bgColor} flex items-center justify-center mb-4`}
-                >
-                  <Icon className={`h-6 w-6 ${feature.color}`} />
-                </div>
-                <CardTitle className="flex items-center justify-between">
-                  {feature.title}
-                  <ArrowRight className="h-5 w-5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                </CardTitle>
-                <CardDescription>{feature.description}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Link href={feature.href}>
-                  <Button variant="outline" className="w-full">
-                    进入
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
+            <Link key={feature.href} href={feature.href} className="block">
+              <Card className="group hover:shadow-lg transition-all hover:border-primary/30 cursor-pointer h-full">
+                <CardHeader>
+                  <div
+                    className={`w-12 h-12 rounded-lg ${feature.bgColor} flex items-center justify-center mb-4`}
+                  >
+                    <Icon className={`h-6 w-6 ${feature.color}`} />
+                  </div>
+                  <CardTitle className="flex items-center justify-between">
+                    {feature.title}
+                    <ArrowRight className="h-5 w-5 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all" />
+                  </CardTitle>
+                  <CardDescription>{feature.description}</CardDescription>
+                </CardHeader>
+              </Card>
+            </Link>
           );
         })}
       </div>

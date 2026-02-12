@@ -1,8 +1,10 @@
 "use client";
 
-import { User, Bot, Loader2, RefreshCw, AlertCircle, Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { User, Bot, Loader2, RefreshCw, AlertCircle, Copy, Check, Sparkles } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -28,8 +30,17 @@ export function MessageBubble({ message, onRetry, isRetrying }: MessageBubblePro
   const isUser = message.role === "user";
   const showRetry = !isUser && !message.isStreaming && (message.isError || (!message.isLoading && message.content));
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = async () => {
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopy = useCallback(async () => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(message.content);
@@ -45,11 +56,14 @@ export function MessageBubble({ message, onRetry, isRetrying }: MessageBubblePro
         document.body.removeChild(textArea);
       }
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimerRef.current) {
+        clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
     }
-  };
+  }, [message.content]);
 
   if (isUser) {
     // User message - simple right-aligned bubble
@@ -119,6 +133,15 @@ export function MessageBubble({ message, onRetry, isRetrying }: MessageBubblePro
                 </div>
               )}
 
+              {/* Query rewrite indicator */}
+              {!message.isError && message.rewrittenQuery && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/50 rounded-md px-2.5 py-1.5 w-fit">
+                  <Sparkles className="h-3 w-3 text-primary shrink-0" />
+                  <span>查询已改写：</span>
+                  <span className="font-medium text-foreground">{message.rewrittenQuery}</span>
+                </div>
+              )}
+
               {/* Main content */}
               {!message.isError && (
                 <div className="prose prose-sm dark:prose-invert max-w-none 
@@ -133,6 +156,8 @@ export function MessageBubble({ message, onRetry, isRetrying }: MessageBubblePro
                   text-[15px] leading-7"
                 >
                   <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeSanitize]}
                     components={{
                       p: ({ children }) => <p>{children}</p>,
                       strong: ({ children }) => <strong>{children}</strong>,
@@ -147,6 +172,22 @@ export function MessageBubble({ message, onRetry, isRetrying }: MessageBubblePro
                         <a href={href} className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
                           {children}
                         </a>
+                      ),
+                      table: ({ children }) => (
+                        <div className="overflow-x-auto my-2">
+                          <table className="min-w-full border-collapse border border-border text-sm">
+                            {children}
+                          </table>
+                        </div>
+                      ),
+                      th: ({ children }) => (
+                        <th className="border border-border bg-muted px-3 py-1.5 text-left font-medium">{children}</th>
+                      ),
+                      td: ({ children }) => (
+                        <td className="border border-border px-3 py-1.5">{children}</td>
+                      ),
+                      input: ({ checked, ...props }) => (
+                        <input type="checkbox" checked={checked} disabled className="mr-1.5 align-middle" {...props} />
                       ),
                     }}
                   >

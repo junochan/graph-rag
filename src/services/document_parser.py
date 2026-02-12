@@ -119,8 +119,8 @@ class TextChunker:
 
     def __init__(
         self,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
         separators: list[str] | None = None,
     ):
         self.chunk_size = chunk_size
@@ -198,8 +198,8 @@ def get_document_parser() -> DocumentParser:
 
 
 def get_text_chunker(
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
+    chunk_size: int = 500,
+    chunk_overlap: int = 100,
 ) -> TextChunker:
     """Get text chunker instance."""
     return TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)

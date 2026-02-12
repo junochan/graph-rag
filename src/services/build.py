@@ -103,8 +103,8 @@ class BuildService:
     
     def __init__(
         self,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -358,8 +358,8 @@ _build_service: BuildService | None = None
 
 
 def get_build_service(
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
+    chunk_size: int = 500,
+    chunk_overlap: int = 100,
 ) -> BuildService:
     """Get singleton build service instance."""
     global _build_service

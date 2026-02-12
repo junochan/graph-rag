@@ -125,6 +125,31 @@
   }
 }
 
+/* Smooth theme transition */
+html.theme-transition,
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease !important;
+  transition-delay: 0s !important;
+}
+
+/* ReactFlow dark mode */
+.dark .react-flow__background {
+  background-color: rgb(15, 23, 42);
+}
+.dark .react-flow__edge-path {
+  stroke: rgb(100, 116, 139);
+}
+.dark .react-flow__controls button {
+  background-color: rgb(30, 41, 59);
+  color: rgb(203, 213, 225);
+  border-color: rgb(51, 65, 85);
+}
+.dark .react-flow__controls button:hover {
+  background-color: rgb(51, 65, 85);
+}
+
 /* Typing cursor animation */
 @keyframes cursor-blink {
   0%, 45% {

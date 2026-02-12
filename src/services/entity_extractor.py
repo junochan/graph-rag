@@ -111,8 +111,9 @@ Output a valid JSON object with the following structure:
 3. Use the provided entity types; if none fit, use the closest match
 4. Each relationship must reference entities that exist in the entities list
 5. Avoid duplicate entities (same name and type)
-6. Be concise but informative in descriptions
-7. Output ONLY the JSON object, no additional text
+6. Keep descriptions short (under 50 characters each)
+7. Output ONLY the JSON object, no additional text, no comments, no trailing commas
+8. Ensure the JSON is complete and valid — do NOT truncate
 
 ## Text to analyze:
 {text}
@@ -155,10 +156,11 @@ class EntityExtractor:
         try:
             response = self.llm.chat(
                 messages=[
-                    {"role": "system", "content": "You are a knowledge graph extraction expert. Always output valid JSON."},
+                    {"role": "system", "content": "You are a knowledge graph extraction expert. Always output valid, complete JSON. Never truncate the output."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,  # Low temperature for consistent extraction
+                max_tokens=8192,  # Ensure enough room for complete JSON output
             )
 
             # Parse JSON from response
@@ -230,6 +232,65 @@ class EntityExtractor:
             relationships=unique_relationships,
         )
 
+    @staticmethod
+    def _fix_json(text: str) -> str:
+        """Attempt to fix common JSON issues from LLM output."""
+        # Remove code-fence markers (```json ... ```)
+        text = re.sub(r"```(?:json)?\s*", "", text)
+
+        # Remove single-line JS/C-style comments  ( // ... )
+        text = re.sub(r"//[^\n]*", "", text)
+
+        # Remove trailing commas before } or ]  (e.g.  , } → } )
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+
+        # If the JSON is truncated mid-string, try to close it gracefully.
+        # Count open vs close braces/brackets to detect truncation.
+        opens = text.count("{") + text.count("[")
+        closes = text.count("}") + text.count("]")
+        if opens > closes:
+            # Ensure we're not inside an unterminated string
+            # Simple heuristic: strip to last complete entry, then close
+            diff = opens - closes
+            # Try appending the missing closers
+            # Detect the order of openers that are unclosed
+            stack: list[str] = []
+            in_string = False
+            escape = False
+            for ch in text:
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"' and not escape:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch in ("{", "["):
+                    stack.append(ch)
+                elif ch == "}" and stack and stack[-1] == "{":
+                    stack.pop()
+                elif ch == "]" and stack and stack[-1] == "[":
+                    stack.pop()
+
+            # Close in reverse order
+            for opener in reversed(stack):
+                text += "]" if opener == "[" else "}"
+
+            # If we were inside a string, close it first
+            if in_string:
+                text = text.rstrip()
+                if not text.endswith('"'):
+                    text += '"'
+                # re-close containers
+                for opener in reversed(stack):
+                    text += "]" if opener == "[" else "}"
+
+        return text
+
     def _parse_response(self, response: str) -> ExtractionResult:
         """Parse LLM response to ExtractionResult."""
         # Try to extract JSON from response
@@ -238,11 +299,24 @@ class EntityExtractor:
             logger.warning("No JSON found in response")
             return ExtractionResult()
 
+        raw_json = json_match.group()
+
+        # Attempt 1: parse as-is
+        data = None
         try:
-            data = json.loads(json_match.group())
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON: {e}")
-            return ExtractionResult()
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            pass
+
+        # Attempt 2: fix common issues and retry
+        if data is None:
+            try:
+                fixed = self._fix_json(raw_json)
+                data = json.loads(fixed)
+                logger.info("JSON parsed successfully after auto-fix")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON even after fix attempt: {e}")
+                return ExtractionResult()
 
         entities = []
         for e in data.get("entities", []):

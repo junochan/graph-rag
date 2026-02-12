@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-import { Search, RefreshCw, Filter, ZoomIn } from "lucide-react";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { Search, RefreshCw, Filter, ZoomIn, GitBranch } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,8 @@ import {
   DropdownMenuContent,
   DropdownMenuCheckboxItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -39,6 +41,7 @@ export default function GraphPage() {
   const [selectedTypes, setSelectedTypes] = useState<string[]>(
     ENTITY_TYPES.map((t) => t.value)
   );
+  const [graphDepth, setGraphDepth] = useState(1);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
 
   // Load initial data
@@ -51,18 +54,34 @@ export default function GraphPage() {
           query,
           search_type: "graph",
           expand_graph: true,
-          graph_depth: 3,
+          graph_depth: graphDepth,
           use_llm: false,
         });
 
-        if (response.graph_context) {
-          setNodes(response.graph_context.nodes);
-          setEdges(response.graph_context.edges);
-          setStats({
-            nodes: response.graph_context.nodes.length,
-            edges: response.graph_context.edges.length,
-          });
-        }
+        // Merge: results contain the matched entities themselves (e.g. "张三"),
+        // while graph_context only contains their *neighbours* from expansion.
+        // We need both to show the full subgraph.
+        const contextNodes = response.graph_context?.nodes ?? [];
+        const contextEdges = response.graph_context?.edges ?? [];
+
+        // Convert matched results into graph nodes (deduplicated by id)
+        const seenIds = new Set(contextNodes.map((n) => n.id));
+        const resultNodes: GraphNode[] = response.results
+          .filter((r) => r.is_entity && !seenIds.has(r.id))
+          .map((r) => ({
+            id: r.id,
+            name: r.name,
+            type: r.properties?.entity_type as string || r.type,
+            properties: r.properties,
+          }));
+
+        const allNodes = [...resultNodes, ...contextNodes];
+        setNodes(allNodes);
+        setEdges(contextEdges);
+        setStats({
+          nodes: allNodes.length,
+          edges: contextEdges.length,
+        });
       } else {
         // Load full graph data including nodes and edges
         const graphResponse = await getGraphData({ limit: 100 });
@@ -81,7 +100,7 @@ export default function GraphPage() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [graphDepth]);
 
   // Initial load
   useEffect(() => {
@@ -105,17 +124,17 @@ export default function GraphPage() {
     [handleSearch]
   );
 
-  // Filter nodes by type
-  const filteredNodes = nodes.filter((node) =>
-    selectedTypes.includes(node.type.toLowerCase())
+  // Filter nodes by type (memoized to avoid re-filtering on every render)
+  const filteredNodes = useMemo(
+    () => nodes.filter((node) => selectedTypes.includes(node.type.toLowerCase())),
+    [nodes, selectedTypes],
   );
 
   // Filter edges to only include those connecting visible nodes
-  const filteredEdges = edges.filter(
-    (edge) =>
-      filteredNodes.some((n) => n.id === edge.source) &&
-      filteredNodes.some((n) => n.id === edge.target)
-  );
+  const filteredEdges = useMemo(() => {
+    const visibleIds = new Set(filteredNodes.map((n) => n.id));
+    return edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
+  }, [edges, filteredNodes]);
 
   // Toggle type filter
   const toggleType = useCallback((type: string) => {
@@ -153,6 +172,28 @@ export default function GraphPage() {
                 <Search className="h-4 w-4" />
               </Button>
             </div>
+
+            {/* Graph Depth */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">
+                  <GitBranch className="h-4 w-4 mr-2" />
+                  {graphDepth} 跳
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>图扩展深度</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuRadioGroup
+                  value={graphDepth.toString()}
+                  onValueChange={(v) => setGraphDepth(parseInt(v))}
+                >
+                  <DropdownMenuRadioItem value="1">1 跳 (直接关联)</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="2">2 跳</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="3">3 跳</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             {/* Type Filter */}
             <DropdownMenu>

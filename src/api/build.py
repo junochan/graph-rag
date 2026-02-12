@@ -32,10 +32,10 @@ build_text_request = api.model(
         "space": fields.String(description="Graph space name (optional)"),
         "collection": fields.String(description="Vector collection name (optional)"),
         "chunk_size": fields.Integer(
-            description="Chunk size for text splitting", default=1000
+            description="Chunk size for text splitting", default=500
         ),
         "chunk_overlap": fields.Integer(
-            description="Chunk overlap size", default=200
+            description="Chunk overlap size", default=100
         ),
     },
 )
@@ -112,7 +112,7 @@ file_upload_parser.add_argument(
     location="form",
     type=int,
     required=False,
-    default=1000,
+    default=500,
     help="Chunk size for text splitting",
 )
 file_upload_parser.add_argument(
@@ -120,7 +120,7 @@ file_upload_parser.add_argument(
     location="form",
     type=int,
     required=False,
-    default=200,
+    default=100,
     help="Chunk overlap size",
 )
 
@@ -144,8 +144,8 @@ class BuildFromText(Resource):
         """Build knowledge graph from text."""
         data = request.json or {}
 
-        chunk_size = data.get("chunk_size", 1000)
-        chunk_overlap = data.get("chunk_overlap", 200)
+        chunk_size = data.get("chunk_size", 500)
+        chunk_overlap = data.get("chunk_overlap", 100)
         service = get_build_service(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
         result = service.build_from_text(
@@ -177,8 +177,8 @@ class BuildFromFile(Resource):
         args = file_upload_parser.parse_args()
         file: FileStorage = args["file"]
 
-        chunk_size = args.get("chunk_size", 1000)
-        chunk_overlap = args.get("chunk_overlap", 200)
+        chunk_size = args.get("chunk_size", 500)
+        chunk_overlap = args.get("chunk_overlap", 100)
         service = get_build_service(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
         result = service.build_from_file(

@@ -47,7 +47,7 @@ retrieve_request = api.model(
         "collection": fields.String(description="Vector collection name (optional)"),
         "space": fields.String(description="Graph space name (optional)"),
         "use_llm": fields.Boolean(
-            default=False, description="Generate answer using LLM"
+            default=True, description="Generate answer using LLM"
         ),
         "history": fields.List(
             fields.Nested(history_message),
@@ -155,21 +155,35 @@ class Retrieve(Resource):
         if search_type not in ("hybrid", "vector", "graph"):
             search_type = "hybrid"
 
-        service = get_retrieval_service()
+        try:
+            service = get_retrieval_service()
 
-        # Delegate to service
-        response = service.retrieve(
-            query=query,
-            search_type=search_type,
-            collection=data.get("collection"),
-            space=data.get("space"),
-            top_k=data.get("top_k", 10),
-            expand_graph=data.get("expand_graph", True),
-            graph_depth=data.get("graph_depth", 2),
-            use_llm=data.get("use_llm", False),
-        )
+            # Delegate to service
+            response = service.retrieve(
+                query=query,
+                search_type=search_type,
+                collection=data.get("collection"),
+                space=data.get("space"),
+                top_k=data.get("top_k", 10),
+                expand_graph=data.get("expand_graph", True),
+                graph_depth=data.get("graph_depth", 2),
+                use_llm=data.get("use_llm", True),
+                history=data.get("history"),
+            )
 
-        return response.to_dict()
+            return response.to_dict()
+
+        except Exception as e:
+            logger.error(f"Retrieval failed: {e}")
+            return {
+                "success": False,
+                "query": query,
+                "results": [],
+                "graph_context": None,
+                "answer": None,
+                "sources": [],
+                "errors": [str(e)],
+            }
 
 
 @api.route("/health")
@@ -220,8 +234,9 @@ class RetrieveStream(Resource):
             """Generate SSE stream."""
             try:
                 service = get_retrieval_service()
+                history = data.get("history", [])
 
-                # Step 1: Perform retrieval (without LLM)
+                # Step 1: Perform retrieval (without LLM, but with history for query rewriting)
                 response = service.retrieve(
                     query=query,
                     search_type=search_type,
@@ -231,6 +246,7 @@ class RetrieveStream(Resource):
                     expand_graph=data.get("expand_graph", True),
                     graph_depth=data.get("graph_depth", 2),
                     use_llm=False,  # Don't use LLM yet
+                    history=history if history else None,
                 )
 
                 # Send context first
@@ -254,15 +270,17 @@ class RetrieveStream(Resource):
                     "errors": response.errors,
                     "timing": response.timing.to_dict(),
                 }
+                if response.rewritten_query:
+                    context_data["rewritten_query"] = response.rewritten_query
                 yield f"event: context\ndata: {json.dumps(context_data, ensure_ascii=False)}\n\n"
 
-                # Step 2: Stream LLM response (always call LLM when use_llm is True)
+                # Step 2: Stream LLM response (use rewritten query for consistency)
+                llm_query = response.rewritten_query or query
                 if data.get("use_llm", True):
                     try:
                         answer_service = service.answer_generation
-                        history = data.get("history", [])
                         for token in answer_service.generate_answer_stream(
-                            query, response.results, response.graph_context, history
+                            llm_query, response.results, response.graph_context, history
                         ):
                             yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
                     except Exception as e:

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { X, User, Building, MapPin, Tag, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,9 +38,15 @@ export function NodeDetail({ node, edges, onClose }: NodeDetailProps) {
   const Icon = TYPE_ICONS[nodeType] || Info;
   const colorClass = TYPE_COLORS[nodeType] || TYPE_COLORS.entity;
 
-  // Find related edges
-  const outgoingEdges = edges.filter((e) => e.source === node.id);
-  const incomingEdges = edges.filter((e) => e.target === node.id);
+  // Find related edges (memoized)
+  const outgoingEdges = useMemo(
+    () => edges.filter((e) => e.source === node.id),
+    [edges, node.id],
+  );
+  const incomingEdges = useMemo(
+    () => edges.filter((e) => e.target === node.id),
+    [edges, node.id],
+  );
 
   return (
     <div className="h-full flex flex-col border-l bg-background">

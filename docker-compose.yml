@@ -1,0 +1,194 @@
+# ============================================
+# Graph RAG - Docker Compose
+# ============================================
+# 使用方法:
+#   1. 复制 .env.docker.example 为 .env
+#   2. 修改 .env 中的配置（至少填写 API Key）
+#   3. docker compose up -d
+#   4. 等待所有服务启动后访问:
+#      - 前端: http://localhost:3000
+#      - 后端 API: http://localhost:8008/docs
+#      - NebulaGraph Studio: http://localhost:7001
+#      - Qdrant Dashboard: http://localhost:6333/dashboard
+# ============================================
+
+services:
+  # ---- NebulaGraph Cluster ----
+  nebula-metad:
+    image: vesoft/nebula-metad:v3.8.0
+    container_name: graph-rag-metad
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --local_ip=nebula-metad
+      - --ws_ip=nebula-metad
+      - --port=9559
+      - --ws_http_port=19559
+      - --data_path=/data/meta
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    volumes:
+      - nebula-metad-data:/data/meta
+      - nebula-metad-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-metad:19559/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  nebula-storaged:
+    image: vesoft/nebula-storaged:v3.8.0
+    container_name: graph-rag-storaged
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --local_ip=nebula-storaged
+      - --ws_ip=nebula-storaged
+      - --port=9779
+      - --ws_http_port=19779
+      - --data_path=/data/storage
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    volumes:
+      - nebula-storaged-data:/data/storage
+      - nebula-storaged-logs:/logs
+    depends_on:
+      nebula-metad:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-storaged:19779/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  nebula-graphd:
+    image: vesoft/nebula-graphd:v3.8.0
+    container_name: graph-rag-graphd
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --local_ip=nebula-graphd
+      - --ws_ip=nebula-graphd
+      - --port=9669
+      - --ws_http_port=19669
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    ports:
+      - "${NEBULA_GRAPHD_PORT:-9669}:9669"
+      - "19669:19669"
+    depends_on:
+      nebula-storaged:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://nebula-graphd:19669/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  nebula-studio:
+    image: vesoft/nebula-graph-studio:v3.10.0
+    container_name: graph-rag-studio
+    ports:
+      - "${NEBULA_STUDIO_PORT:-7001}:7001"
+    depends_on:
+      nebula-graphd:
+        condition: service_healthy
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  # ---- Qdrant Vector Store ----
+  qdrant:
+    image: qdrant/qdrant:v1.12.6
+    container_name: graph-rag-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/readyz"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  # ---- Backend API (Flask) ----
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: graph-rag-backend
+    ports:
+      - "${BACKEND_PORT:-8008}:8008"
+    env_file:
+      - .env
+    environment:
+      # 覆盖服务地址为 Docker 内部网络地址
+      HOST: "0.0.0.0"
+      PORT: "8008"
+      NEBULA__HOSTS: '["nebula-graphd:9669"]'
+      VECTOR_STORE__QDRANT_HOST: qdrant
+      VECTOR_STORE__QDRANT_PORT: "6333"
+    depends_on:
+      nebula-graphd:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+  # ---- Frontend (Next.js) ----
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8008}
+    container_name: graph-rag-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - graph-rag-net
+    restart: unless-stopped
+
+volumes:
+  nebula-metad-data:
+  nebula-metad-logs:
+  nebula-storaged-data:
+  nebula-storaged-logs:
+  qdrant-data:
+
+networks:
+  graph-rag-net:
+    driver: bridge

@@ -16,6 +16,10 @@ export function Header() {
   const toggleTheme = () => {
     const newIsDark = !isDark;
     setIsDark(newIsDark);
+
+    // Add transition class for smooth color change
+    document.documentElement.classList.add("theme-transition");
+
     if (newIsDark) {
       document.documentElement.classList.add("dark");
       localStorage.setItem("theme", "dark");
@@ -23,6 +27,11 @@ export function Header() {
       document.documentElement.classList.remove("dark");
       localStorage.setItem("theme", "light");
     }
+
+    // Remove transition class after animation completes
+    setTimeout(() => {
+      document.documentElement.classList.remove("theme-transition");
+    }, 350);
   };
 
   return (
@@ -47,7 +56,7 @@ export function Header() {
 
         <Button variant="ghost" size="icon" asChild>
           <a
-            href="https://github.com"
+            href="https://github.com/junochan/graph-rag"
             target="_blank"
             rel="noopener noreferrer"
             title="GitHub"

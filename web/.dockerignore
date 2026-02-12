@@ -1,0 +1,28 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build
+.next
+out
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env files
+.env*
+!.env.local.example
+
+# IDE
+.vscode
+.idea
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Misc
+*.md
